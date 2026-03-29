@@ -12,12 +12,53 @@ SBOX_APP_ID="${SBOX_APP_ID:-1892930}"
 SBOX_AUTO_UPDATE="${SBOX_AUTO_UPDATE:-1}"
 SBOX_BRANCH="${SBOX_BRANCH:-}"
 STEAM_PLATFORM="${STEAM_PLATFORM:-windows}"
+RESET_WINEPREFIX_ON_ARCH_MISMATCH="${RESET_WINEPREFIX_ON_ARCH_MISMATCH:-1}"
 GAME="${GAME:-}"
 MAP="${MAP:-}"
 SERVER_NAME="${HOSTNAME:-}"
 TOKEN="${TOKEN:-}"
 SBOX_PROJECT="${SBOX_PROJECT:-}"
 SBOX_EXTRA_ARGS="${SBOX_EXTRA_ARGS:-}"
+
+detect_prefix_arch() {
+    if [ ! -f "${WINEPREFIX}/system.reg" ]; then
+        return 1
+    fi
+
+    if grep -qi "#arch=win64" "${WINEPREFIX}/system.reg"; then
+        echo "win64"
+        return 0
+    fi
+
+    if grep -qi "#arch=win32" "${WINEPREFIX}/system.reg"; then
+        echo "win32"
+        return 0
+    fi
+
+    return 1
+}
+
+ensure_wineprefix_arch() {
+    local current_arch
+
+    current_arch="$(detect_prefix_arch || true)"
+    if [ -z "${current_arch}" ]; then
+        return 0
+    fi
+
+    if [ "${current_arch}" = "${WINEARCH:-win64}" ]; then
+        return 0
+    fi
+
+    if [ "${RESET_WINEPREFIX_ON_ARCH_MISMATCH}" != "1" ]; then
+        echo "fatal: wine prefix architecture is ${current_arch} but WINEARCH=${WINEARCH:-win64}. Delete ${WINEPREFIX} or set RESET_WINEPREFIX_ON_ARCH_MISMATCH=1." >&2
+        exit 1
+    fi
+
+    echo "warn: recreating ${WINEPREFIX} because prefix arch ${current_arch} does not match WINEARCH=${WINEARCH:-win64}" >&2
+    rm -rf "${WINEPREFIX}"
+    mkdir -p "${WINEPREFIX}"
+}
 
 if [ "$(id -u)" != "${EXPECTED_UID}" ]; then
     echo "fatal: running with uid $(id -u), expected ${EXPECTED_UID}" >&2
@@ -34,6 +75,8 @@ if [ ! -w "${CONTAINER_HOME}" ]; then
     echo "fatal: ${CONTAINER_HOME} is not writable by uid $(id -u)" >&2
     exit 1
 fi
+
+ensure_wineprefix_arch
 
 cleanup() {
     wineserver -k >/dev/null 2>&1 || true
@@ -166,7 +209,7 @@ if [ ! -f "${WINEPREFIX}/system.reg" ]; then
         if [ ! -f "${WINEPREFIX}/system.reg" ]; then
             export HOME="${CONTAINER_HOME}"
             export WINEPREFIX
-            export WINEARCH="${WINEARCH:-win32}"
+            export WINEARCH="${WINEARCH:-win64}"
 
             if command -v xvfb-run >/dev/null 2>&1; then
                 xvfb-run -a wineboot -u >/tmp/wineboot.log 2>&1 || true

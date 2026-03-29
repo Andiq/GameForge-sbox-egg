@@ -19,7 +19,7 @@ ENV CONTAINER_HOME=/home/container \
         LANG=C.UTF-8 \
         LC_ALL=C.UTF-8 \
         WINEPREFIX=/home/container/.wine \
-        WINEARCH=win32 \
+        WINEARCH=win64 \
         WINEDEBUG=-all \
         WINEDLLOVERRIDES=icu,icuuc=d \
         DOTNET_ROOT=/usr/share/dotnet \
