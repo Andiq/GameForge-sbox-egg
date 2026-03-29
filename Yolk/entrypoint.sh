@@ -520,10 +520,10 @@ if [ "$#" -eq 0 ] || [ "${1:-}" = "start-sbox" ]; then
     fi
 
     # Create a timestamped log file from the start
-    local timestamp="$(date +%Y%m%d-%H%M%S)"
-    local logs_dir="${CONTAINER_HOME}/logs"
-    mkdir -p "${logs_dir}"
-    local diag_log="${logs_dir}/sbox-server-${timestamp}.log"
+    TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+    LOGS_DIR="${CONTAINER_HOME}/logs"
+    mkdir -p "${LOGS_DIR}"
+    DIAG_LOG="${LOGS_DIR}/sbox-server-${TIMESTAMP}.log"
     
     # Run diagnostics and capture to log file
     {
@@ -532,10 +532,10 @@ if [ "$#" -eq 0 ] || [ "${1:-}" = "start-sbox" ]; then
         verify_dotnet_runtime
         echo ""
         echo "=== Starting Server ==="
-    } >> "${diag_log}" 2>&1
+    } >> "${DIAG_LOG}" 2>&1
     
     # Now run S&Box with the same log file
-    run_sbox "${diag_log}"
+    run_sbox "${DIAG_LOG}"
 fi
 
 exec "$@"
