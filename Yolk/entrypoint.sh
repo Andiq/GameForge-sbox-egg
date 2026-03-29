@@ -45,6 +45,27 @@ update_sbox() {
     local bootstrap_tar="${steamcmd_home}/steamcmd_linux.tar.gz"
     local -a steam_args
 
+    bootstrap_steamcmd() {
+        mkdir -p "${steamcmd_home}"
+        if ! wget -qO "${bootstrap_tar}" https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz; then
+            echo "fatal: unable to download steamcmd bootstrap archive" >&2
+            return 1
+        fi
+        if ! tar -xzf "${bootstrap_tar}" -C "${steamcmd_home}"; then
+            echo "fatal: unable to extract steamcmd bootstrap archive" >&2
+            return 1
+        fi
+        rm -f "${bootstrap_tar}"
+
+        if [ -f "${steamcmd_home}/steamcmd.sh" ]; then
+            steamcmd_bin="${steamcmd_home}/steamcmd.sh"
+            return 0
+        fi
+
+        echo "fatal: steamcmd bootstrap did not produce steamcmd.sh" >&2
+        return 1
+    }
+
     if [ -x "/opt/steamcmd/steamcmd.sh" ]; then
         steamcmd_bin="/opt/steamcmd/steamcmd.sh"
     elif [ -x "/usr/local/bin/steamcmd" ]; then
@@ -54,21 +75,7 @@ update_sbox() {
     fi
 
     if [ -z "${steamcmd_bin}" ]; then
-        mkdir -p "${steamcmd_home}"
-        if ! wget -qO "${bootstrap_tar}" https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz; then
-            echo "fatal: unable to download steamcmd bootstrap archive" >&2
-            exit 1
-        fi
-        if ! tar -xzf "${bootstrap_tar}" -C "${steamcmd_home}"; then
-            echo "fatal: unable to extract steamcmd bootstrap archive" >&2
-            exit 1
-        fi
-        rm -f "${bootstrap_tar}"
-
-        if [ -x "${steamcmd_home}/steamcmd.sh" ]; then
-            steamcmd_bin="${steamcmd_home}/steamcmd.sh"
-        else
-            echo "fatal: steamcmd bootstrap did not produce steamcmd.sh" >&2
+        if ! bootstrap_steamcmd; then
             exit 1
         fi
     fi
@@ -87,7 +94,13 @@ update_sbox() {
 
     steam_args+=( validate +quit )
 
-    "${steamcmd_bin}" "${steam_args[@]}"
+    if ! bash "${steamcmd_bin}" "${steam_args[@]}"; then
+        echo "warn: steamcmd failed from ${steamcmd_bin}; attempting user-local bootstrap retry" >&2
+        if ! bootstrap_steamcmd; then
+            exit 1
+        fi
+        bash "${steamcmd_bin}" "${steam_args[@]}"
+    fi
 }
 
 run_sbox() {
