@@ -316,6 +316,7 @@ run_sbox() {
         echo "SBOX_SERVER_EXE: ${SBOX_SERVER_EXE}"
         echo "WINEPREFIX: ${WINEPREFIX}"
         echo "WINEARCH: ${WINEARCH:-win64}"
+        echo "Container IPs: $(hostname -I 2>/dev/null || echo unknown)"
         echo "Game: ${GAME:-none}"
         echo "Map: ${MAP:-none}"
         echo "Server Name: ${SERVER_NAME:-none}"
@@ -330,16 +331,13 @@ run_sbox() {
         DOTNET_ROOT="${WIN_DOTNET_ROOT}"
         DOTNET_ROOT_X64="${WIN_DOTNET_ROOT}"
         DOTNET_MULTILEVEL_LOOKUP="${DOTNET_MULTILEVEL_LOOKUP}"
-        DOTNET_EnableWriteXorExecute=0
-        COMPlus_TieredCompilation=0
-        COMPlus_ReadyToRun=0
         WINEDEBUG=-all
         WINE_CPU_TOPOLOGY=2:2
-        WINEESYNC=0
-        WINEFSYNC=0
-        WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-icu,icuuc=d;iphlpapi=b}"
+        WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-icu,icuuc=d}"
     )
 
+    # Capture the real process exit code even with `set -e` enabled globally.
+    set +e
     if [ "${SBOX_USE_XVFB}" = "1" ] && command -v xvfb-run >/dev/null 2>&1; then
         echo "info: launching with xvfb-run (SBOX_USE_XVFB=1)" >&2
         env "${launch_env[@]}" xvfb-run -a wine "${SBOX_SERVER_EXE}" "${args[@]}"
@@ -349,6 +347,7 @@ run_sbox() {
         env "${launch_env[@]}" wine "${SBOX_SERVER_EXE}" "${args[@]}"
         rc=$?
     fi
+    set -e
 
     echo "fatal: sbox-server exited with code ${rc}" >&2
     exit "${rc}"
