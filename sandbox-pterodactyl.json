@@ -10,7 +10,8 @@
     "description": "S&Box dedicated server via Wine with build-time baked Wine prefix and Windows .NET runtime for stable Pterodactyl startup.",
     "features": [],
     "docker_images": {
-        "hyberhost\/gameforge-sbox-egg:latest": "hyberhost\/gameforge-sbox-egg:latest"
+        "ghcr.io\/hyberhost\/gameforge-sbox-egg:latest": "ghcr.io\/hyberhost\/gameforge-sbox-egg:latest",
+        "ghcr.io\/hyberhost\/gameforge-sbox-egg:main": "ghcr.io\/hyberhost\/gameforge-sbox-egg:main"
     },
     "file_denylist": [],
     "startup": "start-sbox",
