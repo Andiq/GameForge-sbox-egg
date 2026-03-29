@@ -31,6 +31,8 @@ TOKEN="${TOKEN:-}"
 SBOX_PROJECT="${SBOX_PROJECT:-}"
 SBOX_EXTRA_ARGS="${SBOX_EXTRA_ARGS:-}"
 SBOX_USE_XVFB="${SBOX_USE_XVFB:-0}"
+SBOX_DEBUG_LOGGING="${SBOX_DEBUG_LOGGING:-0}"
+SBOX_TRACE_STRACE="${SBOX_TRACE_STRACE:-0}"
 
 detect_prefix_arch() {
     if [ ! -f "${WINEPREFIX}/system.reg" ]; then
@@ -260,6 +262,7 @@ run_sbox() {
     local -a extra
     local log_file="${1:-}"
     local -a launch_env
+    local -a launch_cmd
     local rc
 
     if ! resolve_server_exe; then
@@ -317,6 +320,9 @@ run_sbox() {
         echo "WINEPREFIX: ${WINEPREFIX}"
         echo "WINEARCH: ${WINEARCH:-win64}"
         echo "Container IPs: $(hostname -I 2>/dev/null || echo unknown)"
+        echo "SBOX_USE_XVFB: ${SBOX_USE_XVFB}"
+        echo "SBOX_DEBUG_LOGGING: ${SBOX_DEBUG_LOGGING}"
+        echo "SBOX_TRACE_STRACE: ${SBOX_TRACE_STRACE}"
         echo "Game: ${GAME:-none}"
         echo "Map: ${MAP:-none}"
         echo "Server Name: ${SERVER_NAME:-none}"
@@ -336,19 +342,43 @@ run_sbox() {
         WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-icu,icuuc=d}"
     )
 
+    if [ "${SBOX_DEBUG_LOGGING}" = "1" ]; then
+        echo "info: debug snapshot: routes" >&2
+        ip route 2>/dev/null || true
+        echo "info: debug snapshot: interfaces" >&2
+        ip -br address 2>/dev/null || true
+        echo "info: debug snapshot: resolv.conf" >&2
+        cat /etc/resolv.conf 2>/dev/null || true
+    fi
+
     # Capture the real process exit code even with `set -e` enabled globally.
     set +e
     if [ "${SBOX_USE_XVFB}" = "1" ] && command -v xvfb-run >/dev/null 2>&1; then
         echo "info: launching with xvfb-run (SBOX_USE_XVFB=1)" >&2
-        env "${launch_env[@]}" xvfb-run -a wine "${SBOX_SERVER_EXE}" "${args[@]}"
+        if [ "${SBOX_TRACE_STRACE}" = "1" ] && command -v strace >/dev/null 2>&1; then
+            echo "info: tracing with strace (-ff -tt) to ${CONTAINER_HOME}/logs/strace-sbox" >&2
+            launch_cmd=(strace -ff -tt -s 256 -o "${CONTAINER_HOME}/logs/strace-sbox" xvfb-run -a wine "${SBOX_SERVER_EXE}" "${args[@]}")
+            env "${launch_env[@]}" "${launch_cmd[@]}"
+        else
+            env "${launch_env[@]}" xvfb-run -a wine "${SBOX_SERVER_EXE}" "${args[@]}"
+        fi
         rc=$?
     else
         echo "info: launching without xvfb-run (dxura-style headless wine)" >&2
-        env "${launch_env[@]}" wine "${SBOX_SERVER_EXE}" "${args[@]}"
+        if [ "${SBOX_TRACE_STRACE}" = "1" ] && command -v strace >/dev/null 2>&1; then
+            echo "info: tracing with strace (-ff -tt) to ${CONTAINER_HOME}/logs/strace-sbox" >&2
+            launch_cmd=(strace -ff -tt -s 256 -o "${CONTAINER_HOME}/logs/strace-sbox" wine "${SBOX_SERVER_EXE}" "${args[@]}")
+            env "${launch_env[@]}" "${launch_cmd[@]}"
+        else
+            env "${launch_env[@]}" wine "${SBOX_SERVER_EXE}" "${args[@]}"
+        fi
         rc=$?
     fi
     set -e
 
+    if [ "${rc}" -ge 128 ]; then
+        echo "fatal: sbox-server terminated by signal $((rc - 128)) (exit ${rc})" >&2
+    fi
     echo "fatal: sbox-server exited with code ${rc}" >&2
     exit "${rc}"
 }

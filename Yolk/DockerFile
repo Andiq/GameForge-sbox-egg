@@ -139,6 +139,9 @@ RUN dpkg --add-architecture i386 \
        libx11-6:i386 \
        libxext6 \
        libxext6:i386 \
+    iproute2 \
+    procps \
+    strace \
        tar \
        tini \
        unzip \
