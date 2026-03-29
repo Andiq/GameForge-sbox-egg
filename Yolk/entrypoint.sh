@@ -34,7 +34,7 @@ SBOX_EXTRA_ARGS="${SBOX_EXTRA_ARGS:-}"
 SBOX_USE_XVFB="${SBOX_USE_XVFB:-0}"
 SBOX_DEBUG_LOGGING="${SBOX_DEBUG_LOGGING:-0}"
 SBOX_TRACE_STRACE="${SBOX_TRACE_STRACE:-0}"
-SBOX_PURGE_CACHE="${SBOX_PURGE_CACHE:-0}"
+SBOX_PURGE_CACHE="${SBOX_PURGE_CACHE:-1}"
 
 detect_prefix_arch() {
     if [ ! -f "${WINEPREFIX}/system.reg" ]; then
@@ -262,14 +262,15 @@ verify_dotnet_runtime() {
 purge_sbox_cache() {
     local target
     local -a purge_targets
+    local addon_bin_dir
 
     if [ "${SBOX_PURGE_CACHE}" != "1" ]; then
         return 0
     fi
 
     purge_targets=(
-        "${SBOX_INSTALL_DIR}/addons/menu/.bin"
-        "${SBOX_INSTALL_DIR}/addons/base/.bin"
+        "${SBOX_INSTALL_DIR}/.source2"
+        "${SBOX_INSTALL_DIR}/.shadercache"
         "${CONTAINER_HOME}/data/.source2"
         "${CONTAINER_HOME}/data/.shadercache"
         "${WINEPREFIX}/drive_c/users/${USER:-container}/AppData/Local/Facepunch"
@@ -284,6 +285,15 @@ purge_sbox_cache() {
             rm -rf "${target}" || true
         fi
     done
+
+    shopt -s nullglob
+    for addon_bin_dir in "${SBOX_INSTALL_DIR}"/addons/*/.bin; do
+        if [ -d "${addon_bin_dir}" ]; then
+            echo "  purge: ${addon_bin_dir}" >&2
+            rm -rf "${addon_bin_dir}" || true
+        fi
+    done
+    shopt -u nullglob
 }
 
 log_suspicious_directories() {
@@ -343,12 +353,40 @@ log_suspicious_artifacts() {
     return 0
 }
 
+log_recent_artifact_changes() {
+    local marker_file="$1"
+    local file_path
+    local size
+    local hash
+
+    if [ -z "${marker_file}" ] || [ ! -f "${marker_file}" ]; then
+        return 0
+    fi
+
+    echo "info: artifact changes since launch" >&2
+    shopt -s nullglob globstar
+    for file_path in \
+        "${SBOX_INSTALL_DIR}"/addons/*/.bin/* \
+        "${CONTAINER_HOME}"/data/**/* \
+        "${WINEPREFIX}"/drive_c/users/${USER:-container}/AppData/Local/Facepunch/**/* \
+        "${WINEPREFIX}"/drive_c/users/${USER:-container}/AppData/Roaming/Facepunch/**/*; do
+        if [ ! -f "${file_path}" ] || [ ! "${file_path}" -nt "${marker_file}" ]; then
+            continue
+        fi
+        size="$(stat -c '%s' "${file_path}" 2>/dev/null || echo 0)"
+        hash="$(sha256sum "${file_path}" 2>/dev/null | awk '{print $1}' || echo unavailable)"
+        echo "  changed=${file_path} size=${size} sha256=${hash}" >&2
+    done
+    shopt -u nullglob globstar
+}
+
 run_sbox() {
     local -a args
     local -a extra
     local log_file="${1:-}"
     local -a launch_env
     local -a launch_cmd
+    local launch_marker
     local rc
 
     if ! resolve_server_exe; then
@@ -421,6 +459,8 @@ run_sbox() {
     # Route all subsequent stdout/stderr to both console and the timestamped log.
     exec > >(tee -a "${log_file}") 2>&1
 
+    launch_marker="$(mktemp "${CONTAINER_HOME}/logs/sbox-launch-marker.XXXXXX")"
+
     launch_env=(
         WINEDEBUG="${SBOX_WINEDEBUG}"
         WINE_CPU_TOPOLOGY=2:2
@@ -466,6 +506,10 @@ run_sbox() {
     if [ "${rc}" -ge 128 ]; then
         echo "fatal: sbox-server terminated by signal $((rc - 128)) (exit ${rc})" >&2
     fi
+    if [ "${SBOX_DEBUG_LOGGING}" = "1" ] && [ "${rc}" -ne 0 ]; then
+        log_recent_artifact_changes "${launch_marker}"
+    fi
+    rm -f "${launch_marker}" || true
     echo "fatal: sbox-server exited with code ${rc}" >&2
     exit "${rc}"
 }
