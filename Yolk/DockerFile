@@ -1,30 +1,24 @@
-# Sandbox (S&Box) Pterodactyl Egg — dxura-adapted variant
-# Copyright (c) 2026 Steven A. Smith
+# Sandbox (S&Box) Pterodactyl Egg — runtime image
+# Keeps the hard part baked into the image:
+#   - Wine
+#   - prepared Wine prefix
+#   - Windows .NET 10 runtime
+#   - SteamCMD compatibility loader/libs for Alpine runtime updates
 #
-# This variant follows the dxura/sbox build pattern:
-#   Stage 1 (builder): Bake Wine prefix + Windows .NET at build time.
-#   Stage 2 (runtime): Copy the baked prefix to /opt/sbox-wine-prefix, which
-#     is outside the /home/container Pterodactyl volume mount.  The first call
-#     to entrypoint.sh copies it into /home/container/.wine automatically.
+# S&Box content itself is installed by the egg installation script into:
+#   /mnt/server/sbox
+# SteamCMD is installed by the egg installation script into:
+#   /mnt/server/steamcmd
 #
-# Build from the repo root:
-#   docker build --platform linux/amd64 \
-#     -f Yolk/DockerFile \
-#     -t hyberhost/gameforge-sbox-egg:latest \
-#     [--build-arg BAKE_WIN_DOTNET_VERSION=10.0.2] \
-#     .
+# This preserves auto-update on restart without relying on runtime SteamCMD
+# bootstrapping inside /home/container.
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 1: Builder
-# ─────────────────────────────────────────────────────────────────────────────
 FROM debian:trixie-slim AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG BAKE_WINETRICKS_VERBS="win10 vcrun2022"
 ARG BAKE_WIN_DOTNET_VERSION=10.0.0
-ARG BAKE_SBOX_APP_ID=1892930
 
-# Enable i386 and contrib/non-free (matches dxura reference)
 RUN dpkg --add-architecture i386 \
     && sed -i 's/^Components: main$/& contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
@@ -48,14 +42,11 @@ RUN dpkg --add-architecture i386 \
     && apt-get clean \
     && rm -rf /tmp/* /var/tmp/* /var/lib/apt/lists/*
 
-# Install winetricks from HEAD to ensure dotnet10 verb (PR #2444) is available.
 RUN git clone --depth 1 https://github.com/Winetricks/winetricks.git /tmp/winetricks \
     && cd /tmp/winetricks \
     && make install \
     && rm -rf /tmp/winetricks
 
-# Consolidate Wine prefix setup into one RUN layer (dxura's proven pattern).
-# Do NOT set ENV globally; pass WINEPREFIX inline. Do NOT pre-initialize with wineboot.
 RUN mkdir -p /work && cd /work && \
     WINEPREFIX=/work/wineprefix xvfb-run winetricks -q --force ${BAKE_WINETRICKS_VERBS} && \
     wget -q "https://builds.dotnet.microsoft.com/dotnet/Runtime/${BAKE_WIN_DOTNET_VERSION}/dotnet-runtime-${BAKE_WIN_DOTNET_VERSION}-win-x64.exe" -O dotnet-installer.exe && \
@@ -63,84 +54,30 @@ RUN mkdir -p /work && cd /work && \
     rm dotnet-installer.exe && \
     rm -rf "/work/wineprefix/drive_c/ProgramData/Package Cache"
 
-# Bake S&Box server content at build-time (dxura pattern) so first run does
-# not depend on runtime Steam download behavior.
-# Some regions/runs return "Missing configuration" for forced platform calls;
-# retry and fallback to native platform without failing the whole image build.
-RUN mkdir -p /work/steamcmd /work/server \
-     && wget -qO /work/steamcmd/steamcmd_linux.tar.gz \
-         https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
-     && tar -xzf /work/steamcmd/steamcmd_linux.tar.gz -C /work/steamcmd \
-     && chmod 0755 /work/steamcmd/steamcmd.sh \
-     && rm /work/steamcmd/steamcmd_linux.tar.gz \
-     && if ! bash /work/steamcmd/steamcmd.sh \
-            +@ShutdownOnFailedCommand 1 \
-            +@NoPromptForPassword 1 \
-            +@sSteamCmdForcePlatformType windows \
-            +force_install_dir /work/server \
-            +login anonymous \
-            +app_update ${BAKE_SBOX_APP_ID} validate \
-            +quit; then \
-            echo "warn: forced windows download failed; retrying without platform override" >&2; \
-            if ! bash /work/steamcmd/steamcmd.sh \
-                +@ShutdownOnFailedCommand 1 \
-                +@NoPromptForPassword 1 \
-                +force_install_dir /work/server \
-                +login anonymous \
-                +app_update ${BAKE_SBOX_APP_ID} validate \
-                +quit; then \
-                echo "warn: build-time app download failed for app ${BAKE_SBOX_APP_ID}; runtime update will be used" >&2; \
-                mkdir -p /work/server; \
-            fi; \
-        fi \
-     && rm -rf /work/steamcmd
-
-# Verify the .NET host was installed (warn only, don't fail build).
 RUN if ! find /work/wineprefix/drive_c -name hostfxr.dll 2>/dev/null | grep -q .; then \
         echo "warn: hostfxr.dll not found — Windows .NET may have failed to install" >&2; \
     fi
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 2: Runtime (match dxura base as closely as possible)
-# ─────────────────────────────────────────────────────────────────────────────
 FROM alpine:edge
 
 LABEL author="Steven A. Smith" maintainer="steven.smith@hyberhost.com"
-LABEL description="S&Box Pterodactyl Egg (dxura-adapted)" version="2.0" license="MIT"
-LABEL org.opencontainers.image.authors="Steven A. Smith" \
-      org.opencontainers.image.description="S&Box Pterodactyl Egg (dxura-adapted)" \
-      org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.source="https://github.com/HyberHost/GameForge-sbox-egg"
+LABEL description="S&Box Pterodactyl Egg runtime with baked Wine prefix and Windows .NET" version="3.0" license="MIT"
 
-ARG PUID=999
-ARG PGID=999
-
-# Runtime defaults
 ENV CONTAINER_HOME=/home/container \
     HOME=/home/container \
     WINEPREFIX=/home/container/.wine \
     WINEARCH=win64 \
     WINEDEBUG=-all \
     WINEDLLOVERRIDES=icu,icuuc=d \
-    # Path to the pre-baked Wine prefix inside the image (not subject to the
-    # Pterodactyl /home/container volume mount).  Entrypoint copies this to
-    # WINEPREFIX on first start if .wine is absent.
     SBOX_BAKED_WINEPREFIX=/opt/sbox-wine-prefix \
-    SBOX_BAKED_SERVER_TEMPLATE=/opt/sbox-server-template \
     SBOX_APP_ID=1892930 \
     SBOX_INSTALL_DIR=/home/container/sbox \
     SBOX_SERVER_EXE=/home/container/sbox/sbox-server.exe \
+    SBOX_AUTO_UPDATE=1 \
+    SBOX_BRANCH= \
     SBOX_LOG_KEEP=10 \
-    # Runtime winetricks / .NET provisioning — disabled by default because the
-    # Wine prefix is already fully baked into the image.
-    INSTALL_WINETRICKS_DOTNET=0 \
-    WINETRICKS_VERBS="win10 vcrun2022" \
-    WINETRICKS_STRICT=0 \
-    INSTALL_WIN_DOTNET=0 \
-    WIN_DOTNET_VERSION=10.0.0 \
-    WIN_DOTNET_INSTALL_METHOD=installer \
-    WIN_DOTNET_ROOT=C:\\Program\ Files\\dotnet \
-    # .NET and Wine performance tuning
+    STEAM_PLATFORM=windows \
+    STEAMCMD_DIR=/home/container/steamcmd \
     DOTNET_EnableWriteXorExecute=0 \
     DOTNET_TieredCompilation=0 \
     DOTNET_ReadyToRun=0 \
@@ -150,46 +87,39 @@ ENV CONTAINER_HOME=/home/container \
     SERVER_NAME= \
     SBOX_PROJECT= \
     SBOX_EXTRA_ARGS= \
+    TOKEN= \
     XDG_RUNTIME_DIR=/tmp
 
 RUN apk add --no-cache \
-    bash \
-    ca-certificates \
-    gnutls \
-    libgcc \
-    libstdc++ \
-    tar \
-    wget \
-    wine
+         bash \
+         ca-certificates \
+         gnutls \
+         libgcc \
+         libstdc++ \
+         tar \
+         wget \
+         wine
 
 RUN mkdir -p \
-    ${WINEPREFIX} \
-    ${CONTAINER_HOME}/data \
-    ${CONTAINER_HOME}/download \
-    ${CONTAINER_HOME}/logs \
-    ${SBOX_INSTALL_DIR} \
-    && chmod 1777 /tmp
+         /home/container/.wine \
+         /home/container/data \
+         /home/container/download \
+         /home/container/logs \
+         /home/container/sbox \
+         /home/container/steamcmd \
+     && chmod 1777 /tmp
 
-# Copy the baked Wine prefix from the builder stage into a path that is NOT
-# covered by the Pterodactyl /home/container volume bind mount.  The
-# entrypoint will copy this to /home/container/.wine on the first start.
 COPY --from=builder /work/wineprefix /opt/sbox-wine-prefix
-COPY --from=builder /work/server /opt/sbox-server-template
+COPY --from=builder /lib/ld-linux.so.2 /opt/steam-compat/lib/ld-linux.so.2
+COPY --from=builder /lib/i386-linux-gnu /opt/steam-compat/lib/i386-linux-gnu
+COPY --from=builder /usr/lib/i386-linux-gnu /opt/steam-compat/usr/lib/i386-linux-gnu
 
-# Fix permissions on copied templates so non-root user can access them.
-# Pterodactyl typically runs containers as uid 999, so ensure these are readable.
-RUN chmod -R u+rwX,g+rX,o+rX /opt/sbox-wine-prefix /opt/sbox-server-template
+RUN chmod -R u+rwX,g+rX,o+rX /opt/sbox-wine-prefix /opt/steam-compat
 
-# Pre-initialize the Wine prefix as root so permissions are set correctly
-# This avoids issues when Pterodactyl non-root user tries to copy later.
-RUN cp -a /opt/sbox-wine-prefix /root/.wine && \
-    WINEPREFIX=/root/.wine wine "" >/dev/null 2>&1 || true && \
-    rm -rf /root/.wine
-
-COPY Yolk/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY yolk/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
-WORKDIR ${CONTAINER_HOME}
+WORKDIR /home/container
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["start-sbox"]

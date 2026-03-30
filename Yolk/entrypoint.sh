@@ -4,7 +4,6 @@ set -euo pipefail
 CONTAINER_HOME="${CONTAINER_HOME:-/home/container}"
 WINEPREFIX="${WINEPREFIX:-/home/container/.wine}"
 BAKED_WINEPREFIX="${SBOX_BAKED_WINEPREFIX:-/opt/sbox-wine-prefix}"
-BAKED_SERVER_TEMPLATE="${SBOX_BAKED_SERVER_TEMPLATE:-/opt/sbox-server-template}"
 
 SBOX_INSTALL_DIR="${SBOX_INSTALL_DIR:-/home/container/sbox}"
 SBOX_SERVER_EXE="${SBOX_SERVER_EXE:-${SBOX_INSTALL_DIR}/sbox-server.exe}"
@@ -12,6 +11,7 @@ SBOX_APP_ID="${SBOX_APP_ID:-1892930}"
 SBOX_AUTO_UPDATE="${SBOX_AUTO_UPDATE:-1}"
 SBOX_BRANCH="${SBOX_BRANCH:-}"
 STEAM_PLATFORM="${STEAM_PLATFORM:-windows}"
+STEAMCMD_DIR="${STEAMCMD_DIR:-${CONTAINER_HOME}/steamcmd}"
 
 GAME="${GAME:-}"
 MAP="${MAP:-}"
@@ -20,32 +20,99 @@ TOKEN="${TOKEN:-}"
 SBOX_PROJECT="${SBOX_PROJECT:-}"
 SBOX_EXTRA_ARGS="${SBOX_EXTRA_ARGS:-}"
 
-# Backward compatibility for older eggs that used HOSTNAME.
-# Avoid using Docker's auto-generated container hostname (typically a hex ID).
+STEAM_COMPAT_LOADER="/opt/steam-compat/lib/ld-linux.so.2"
+STEAM_COMPAT_LIB_PATH="/opt/steam-compat/lib/i386-linux-gnu:/opt/steam-compat/usr/lib/i386-linux-gnu:/opt/steam-compat/lib"
+
 if [ -z "${SERVER_NAME}" ] && [ -n "${HOSTNAME:-}" ] && ! [[ "${HOSTNAME}" =~ ^[0-9a-f]{12,64}$ ]]; then
     SERVER_NAME="${HOSTNAME}"
 fi
 
 seed_runtime_files() {
-    mkdir -p "${CONTAINER_HOME}" "${WINEPREFIX}" "${SBOX_INSTALL_DIR}" "${CONTAINER_HOME}/logs"
+    mkdir -p "${CONTAINER_HOME}" "${WINEPREFIX}" "${SBOX_INSTALL_DIR}" "${CONTAINER_HOME}/logs" "${CONTAINER_HOME}/data" "${STEAMCMD_DIR}"
 
     if [ ! -f "${WINEPREFIX}/system.reg" ] && [ -d "${BAKED_WINEPREFIX}/drive_c" ]; then
         echo "info: seeding Wine prefix from ${BAKED_WINEPREFIX}" >&2
         cp -r "${BAKED_WINEPREFIX}/." "${WINEPREFIX}/"
     fi
-
-    if [ ! -f "${SBOX_SERVER_EXE}" ] && [ -d "${BAKED_SERVER_TEMPLATE}" ]; then
-        echo "info: seeding S&Box files from ${BAKED_SERVER_TEMPLATE}" >&2
-        cp -r "${BAKED_SERVER_TEMPLATE}/." "${SBOX_INSTALL_DIR}/"
-    fi
-
 }
 
+steamcmd_installed() {
+    [ -x "${STEAMCMD_DIR}/linux32/steamcmd" ] && [ -f "${STEAMCMD_DIR}/steamcmd.sh" ]
+}
+
+run_steamcmd() {
+    local -a args=("$@")
+
+    if ! steamcmd_installed; then
+        echo "warn: SteamCMD is not installed in ${STEAMCMD_DIR}; run the egg installation script first" >&2
+        return 1
+    fi
+
+    if [ ! -x "${STEAM_COMPAT_LOADER}" ]; then
+        echo "warn: Steam compatibility loader missing at ${STEAM_COMPAT_LOADER}" >&2
+        return 1
+    fi
+
+    "${STEAM_COMPAT_LOADER}" \
+        --library-path "${STEAM_COMPAT_LIB_PATH}" \
+        "${STEAMCMD_DIR}/linux32/steamcmd" \
+        "${args[@]}"
+}
+
+update_sbox() {
+    local -a steam_args
+    local -a fallback_args
+
+    steam_args=(
+        +@ShutdownOnFailedCommand 1
+        +@NoPromptForPassword 1
+        +@sSteamCmdForcePlatformType "${STEAM_PLATFORM}"
+        +force_install_dir "${SBOX_INSTALL_DIR}"
+        +login anonymous
+        +app_update "${SBOX_APP_ID}"
+    )
+
+    if [ -n "${SBOX_BRANCH}" ]; then
+        steam_args+=( -beta "${SBOX_BRANCH}" )
+    fi
+
+    steam_args+=( validate +quit )
+
+    if ! run_steamcmd +quit >/dev/null 2>&1; then
+        echo "warn: SteamCMD runtime probe failed for '${STEAMCMD_DIR}/linux32/steamcmd'; skipping auto-update" >&2
+        return 0
+    fi
+
+    echo "info: running SteamCMD app_update for app ${SBOX_APP_ID}" >&2
+    if ! run_steamcmd "${steam_args[@]}"; then
+        echo "warn: SteamCMD update failed with platform '${STEAM_PLATFORM}', retrying without platform override" >&2
+        fallback_args=(
+            +@ShutdownOnFailedCommand 1
+            +@NoPromptForPassword 1
+            +force_install_dir "${SBOX_INSTALL_DIR}"
+            +login anonymous
+            +app_update "${SBOX_APP_ID}"
+        )
+
+        if [ -n "${SBOX_BRANCH}" ]; then
+            fallback_args+=( -beta "${SBOX_BRANCH}" )
+        fi
+
+        fallback_args+=( validate +quit )
+        run_steamcmd "${fallback_args[@]}"
+    fi
+}
 
 run_sbox() {
-    local -a args
-    local -a extra
-    local -a launch_env
+    local -a args=()
+    local -a extra=()
+    local -a launch_env=()
+
+    if [ ! -f "${SBOX_SERVER_EXE}" ]; then
+        echo "error: ${SBOX_SERVER_EXE} was not found" >&2
+        echo "error: run the egg installation script, or enable auto-update after SteamCMD has been installed" >&2
+        exit 1
+    fi
 
     if [ -n "${SBOX_PROJECT}" ]; then
         args+=( "${SBOX_PROJECT}" )
@@ -89,6 +156,9 @@ fi
 seed_runtime_files
 
 if [ "${1:-}" = "" ]; then
+    if [ "${SBOX_AUTO_UPDATE}" = "1" ] || [ ! -f "${SBOX_SERVER_EXE}" ]; then
+        update_sbox
+    fi
     run_sbox
 fi
 
