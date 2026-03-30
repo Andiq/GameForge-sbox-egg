@@ -161,9 +161,15 @@ RUN apk add --no-cache \
          bash \
          ca-certificates \
          gnutls \
+         libgcc \
+         libstdc++ \
          tar \
          wget \
          wine
+
+# Install an Alpine-native SteamCMD when available. If unavailable on a mirror,
+# keep going and rely on the bundled SteamCMD + glibc compatibility fallback.
+RUN apk add --no-cache steamcmd || { echo "Alpine-native steamcmd package not installed; falling back to bundled SteamCMD + glibc compatibility layer."; :; }
 
 RUN mkdir -p \
          /home/container/.wine \
@@ -179,6 +185,11 @@ RUN mkdir -p \
 COPY --from=builder /work/wineprefix /opt/sbox-wine-prefix
 COPY --from=builder /work/server /opt/sbox-server-template
 COPY --from=builder /work/steamcmd /opt/sbox-steamcmd-template
+
+# Compatibility runtime for SteamCMD linux32 binary on Alpine/musl.
+COPY --from=builder /lib/ld-linux.so.2 /opt/steam-compat/lib/ld-linux.so.2
+COPY --from=builder /lib/i386-linux-gnu /opt/steam-compat/lib/i386-linux-gnu
+COPY --from=builder /usr/lib/i386-linux-gnu /opt/steam-compat/usr/lib/i386-linux-gnu
 
 # Fix permissions on copied templates so non-root user can access them.
 # Pterodactyl typically runs containers as uid 999, so ensure these are readable.
