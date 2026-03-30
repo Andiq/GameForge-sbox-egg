@@ -1,23 +1,28 @@
-# Sandbox (S&Box) Pterodactyl Egg — runtime image
-# Keeps the hard part baked into the image:
-#   - Wine
-#   - prepared Wine prefix
-#   - Windows .NET 10 runtime
-#   - SteamCMD compatibility loader/libs for Alpine runtime updates
+# Sandbox (S&Box) Pterodactyl Egg — dxura-adapted variant
+# Copyright (c) 2026 Steven A. Smith
 #
-# S&Box content itself is installed by the egg installation script into:
-#   /mnt/server/sbox
-# SteamCMD is installed by the egg installation script into:
-#   /mnt/server/steamcmd
+# This variant follows the dxura/sbox build pattern:
+#   Stage 1 (builder): Bake Wine prefix + Windows .NET at build time.
+#   Stage 2 (runtime): Copy the baked prefix to /opt/sbox-wine-prefix, which
+#     is outside the /home/container Pterodactyl volume mount.  The first call
+#     to entrypoint.sh copies it into /home/container/.wine automatically.
 #
-# This preserves auto-update on restart without relying on runtime SteamCMD
-# bootstrapping inside /home/container.
+# Build from the repo root:
+#   docker build --platform linux/amd64 \
+#     -f Yolk/DockerFile \
+#     -t hyberhost/gameforge-sbox-egg:latest \
+#     [--build-arg BAKE_WIN_DOTNET_VERSION=10.0.2] \
+#     .
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1: Builder
+# ─────────────────────────────────────────────────────────────────────────────
 FROM debian:trixie-slim AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG BAKE_WINETRICKS_VERBS="win10 vcrun2022"
 ARG BAKE_WIN_DOTNET_VERSION=10.0.0
+ARG BAKE_SBOX_APP_ID=1892930
 
 RUN dpkg --add-architecture i386 \
     && sed -i 's/^Components: main$/& contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources \
@@ -54,15 +59,59 @@ RUN mkdir -p /work && cd /work && \
     rm dotnet-installer.exe && \
     rm -rf "/work/wineprefix/drive_c/ProgramData/Package Cache"
 
+# Bake S&Box server content at build-time (dxura pattern) so first run does
+# not depend on runtime Steam download behavior.
+# Some regions/runs return "Missing configuration" for forced platform calls;
+# retry and fallback to native platform without failing the whole image build.
+RUN mkdir -p /work/steamcmd /work/server \
+     && wget -qO /work/steamcmd/steamcmd_linux.tar.gz \
+         https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
+     && tar -xzf /work/steamcmd/steamcmd_linux.tar.gz -C /work/steamcmd \
+     && chmod 0755 /work/steamcmd/steamcmd.sh \
+     && rm /work/steamcmd/steamcmd_linux.tar.gz \
+     && if ! bash /work/steamcmd/steamcmd.sh \
+            +@ShutdownOnFailedCommand 1 \
+            +@NoPromptForPassword 1 \
+            +@sSteamCmdForcePlatformType windows \
+            +force_install_dir /work/server \
+            +login anonymous \
+            +app_update ${BAKE_SBOX_APP_ID} validate \
+            +quit; then \
+            echo "warn: forced windows download failed; retrying without platform override" >&2; \
+            if ! bash /work/steamcmd/steamcmd.sh \
+                +@ShutdownOnFailedCommand 1 \
+                +@NoPromptForPassword 1 \
+                +force_install_dir /work/server \
+                +login anonymous \
+                +app_update ${BAKE_SBOX_APP_ID} validate \
+                +quit; then \
+                echo "warn: build-time app download failed for app ${BAKE_SBOX_APP_ID}; runtime update will be used" >&2; \
+                mkdir -p /work/server; \
+            fi; \
+        fi \
+     && rm -rf /work/steamcmd
+
+# Verify the .NET host was installed (warn only, don't fail build).
 RUN if ! find /work/wineprefix/drive_c -name hostfxr.dll 2>/dev/null | grep -q .; then \
         echo "warn: hostfxr.dll not found — Windows .NET may have failed to install" >&2; \
     fi
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2: Runtime (match dxura base as closely as possible)
+# ─────────────────────────────────────────────────────────────────────────────
 FROM alpine:edge
 
 LABEL author="Steven A. Smith" maintainer="steven.smith@hyberhost.com"
-LABEL description="S&Box Pterodactyl Egg runtime with baked Wine prefix and Windows .NET" version="3.0" license="MIT"
+LABEL description="S&Box Pterodactyl Egg (dxura-adapted)" version="2.0" license="MIT"
+LABEL org.opencontainers.image.authors="Steven A. Smith" \
+      org.opencontainers.image.description="S&Box Pterodactyl Egg (dxura-adapted)" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.source="https://github.com/HyberHost/GameForge-sbox-egg"
 
+ARG PUID=999
+ARG PGID=999
+
+# Runtime defaults
 ENV CONTAINER_HOME=/home/container \
     HOME=/home/container \
     WINEPREFIX=/home/container/.wine \
@@ -74,7 +123,6 @@ ENV CONTAINER_HOME=/home/container \
     SBOX_INSTALL_DIR=/home/container/sbox \
     SBOX_SERVER_EXE=/home/container/sbox/sbox-server.exe \
     SBOX_AUTO_UPDATE=1 \
-    SBOX_BRANCH= \
     SBOX_LOG_KEEP=10 \
     STEAM_PLATFORM=windows \
     STEAMCMD_DIR=/home/container/steamcmd \
@@ -87,7 +135,6 @@ ENV CONTAINER_HOME=/home/container \
     SERVER_NAME= \
     SBOX_PROJECT= \
     SBOX_EXTRA_ARGS= \
-    TOKEN= \
     XDG_RUNTIME_DIR=/tmp
 
 RUN apk add --no-cache \
@@ -116,10 +163,10 @@ COPY --from=builder /usr/lib/i386-linux-gnu /opt/steam-compat/usr/lib/i386-linux
 
 RUN chmod -R u+rwX,g+rX,o+rX /opt/sbox-wine-prefix /opt/steam-compat
 
-COPY yolk/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY Yolk/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
-WORKDIR /home/container
+WORKDIR ${CONTAINER_HOME}
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["start-sbox"]
