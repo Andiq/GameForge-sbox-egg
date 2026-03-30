@@ -31,11 +31,17 @@ fi
 
 seed_runtime_files() {
     local seed_sbox=0
+    local seed_reason=""
 
     if [ ! -d "${SBOX_INSTALL_DIR}" ]; then
         seed_sbox=1
+        seed_reason="missing install directory"
     elif [ -z "$(find "${SBOX_INSTALL_DIR}" -mindepth 1 -print -quit 2>/dev/null)" ]; then
         seed_sbox=1
+        seed_reason="empty install directory"
+    elif [ ! -f "${SBOX_SERVER_EXE}" ]; then
+        seed_sbox=1
+        seed_reason="missing Windows server executable"
     fi
 
     mkdir -p "${CONTAINER_HOME}" "${WINEPREFIX}" "${SBOX_INSTALL_DIR}" "${CONTAINER_HOME}/logs" "${CONTAINER_HOME}/data" "${STEAMCMD_DIR}"
@@ -46,11 +52,11 @@ seed_runtime_files() {
     fi
 
     if [ "${seed_sbox}" = "1" ] && [ -d "${BAKED_SERVER_TEMPLATE}" ]; then
-        echo "info: seeding S&Box files from ${BAKED_SERVER_TEMPLATE}" >&2
+        echo "info: seeding S&Box files from ${BAKED_SERVER_TEMPLATE} (${seed_reason})" >&2
         cp -r "${BAKED_SERVER_TEMPLATE}/." "${SBOX_INSTALL_DIR}/"
         SBOX_PREBAKED_SEEDED=1
     elif [ "${seed_sbox}" = "1" ]; then
-        echo "warn: ${SBOX_INSTALL_DIR} is missing/empty but prebaked template was not found at ${BAKED_SERVER_TEMPLATE}" >&2
+        echo "warn: ${SBOX_INSTALL_DIR} requires reseed (${seed_reason}) but prebaked template was not found at ${BAKED_SERVER_TEMPLATE}" >&2
     fi
 
 }
@@ -110,11 +116,12 @@ run_steamcmd() {
 
 update_sbox() {
     local -a steam_args
+    local force_platform="windows"
 
     steam_args=(
         +@ShutdownOnFailedCommand 1
         +@NoPromptForPassword 1
-        +@sSteamCmdForcePlatformType "${STEAM_PLATFORM}"
+        +@sSteamCmdForcePlatformType "${force_platform}"
         +force_install_dir "${SBOX_INSTALL_DIR}"
         +login anonymous
         +app_update "${SBOX_APP_ID}"
@@ -131,9 +138,9 @@ update_sbox() {
         return 0
     fi
 
-    echo "info: running SteamCMD app_update for app ${SBOX_APP_ID}" >&2
+    echo "info: running SteamCMD app_update for app ${SBOX_APP_ID} with forced platform '${force_platform}'" >&2
     if ! run_steamcmd "${steam_args[@]}"; then
-        echo "warn: SteamCMD update failed with platform '${STEAM_PLATFORM}'; refusing Linux fallback to preserve Wine-compatible server files" >&2
+        echo "warn: SteamCMD update failed with forced platform '${force_platform}'; refusing Linux fallback to preserve Wine-compatible server files" >&2
         return 1
     fi
 
